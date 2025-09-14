@@ -24,12 +24,12 @@ input_tensor = image_to_tensor(image_path)
 target_tensor = input_tensor.clone()
 
 
-batch_size = 16
-num_epochs = 100
+batch_size = 1
+num_epochs = 1000
 learning_rate = 1e-3
 
 
-model = ImageCompressionModel(learning_rate=learning_rate)
+model = ImageCompressionModel(latent_dim=512, learning_rate=learning_rate)
 
 
 class ProgressCheckCallback(pl.Callback):

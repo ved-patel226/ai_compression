@@ -53,69 +53,36 @@ class CBAM(nn.Module):
 
 
 class ImageCompressionModel(pl.LightningModule):
-    def __init__(self, latent_dim=128, learning_rate=1e-3):
+    def __init__(self, latent_dim=256, learning_rate=1e-3):
         super(ImageCompressionModel, self).__init__()
         self.latent_dim = latent_dim
         self.learning_rate = learning_rate
-        self.activation_func = nn.LeakyReLU(0.2)
+
+        self.activation_func = nn.LeakyReLU()
 
         self.encoder = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=4, stride=2, padding=1),
-            self.activation_func,
-            CBAM(64),
-            self.activation_func,
             nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
-            self.activation_func,
-            CBAM(128),
-            self.activation_func,
             nn.Conv2d(128, 128, kernel_size=4, stride=2, padding=1),
-            self.activation_func,
-            CBAM(128),
-            self.activation_func,
         )
 
-        # encoder output shape = 1,280,000
-
-        # self.decoder = nn.Sequential(
-        #     self.activation_func,
-        #     nn.ConvTranspose2d(128, 128, kernel_size=4, stride=2, padding=1),
-        #     self.activation_func,
-        #     nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
-        #     self.activation_func,
-        #     nn.ConvTranspose2d(64, 3, kernel_size=4, stride=2, padding=1),
-        #     nn.Sigmoid(),
-        # )
-
-        class Interpolate(nn.Module):
-            def __init__(self, scale_factor, mode, align_corners):
-                super(Interpolate, self).__init__()
-                self.scale_factor = scale_factor
-                self.mode = mode
-                self.align_corners = align_corners
-
-            def forward(self, x):
-                return F.interpolate(
-                    x,
-                    scale_factor=self.scale_factor,
-                    mode=self.mode,
-                    align_corners=self.align_corners,
-                )
-
         self.decoder = nn.Sequential(
-            Interpolate(scale_factor=2, mode="bilinear", align_corners=False),
-            nn.ConvTranspose2d(3, 64, kernel_size=4, stride=2, padding=1),
-            self.activation_func,
-            Interpolate(scale_factor=2, mode="bilinear", align_corners=False),
-            nn.ConvTranspose2d(64, 128, kernel_size=4, stride=2, padding=1),
-            self.activation_func,
-            Interpolate(scale_factor=2, mode="bilinear", align_corners=False),
             nn.ConvTranspose2d(128, 128, kernel_size=4, stride=2, padding=1),
-            nn.Sigmoid(),
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
+            nn.ConvTranspose2d(64, 3, kernel_size=4, stride=2, padding=1),
         )
 
     def forward(self, x):
-        z = self.encoder(x)
-        x_recon = self.decoder(z)
+        e1 = self.activation_func(self.encoder[0](x))
+        e2 = self.activation_func(self.encoder[1](e1))
+        e3 = self.activation_func(self.encoder[2](e2))
+
+        d1 = self.activation_func(self.decoder[0](e3) + e2)
+
+        d2 = self.activation_func(self.decoder[1](d1) + e1)  # skip from middle encoder
+        d3 = self.decoder[2](d2) + x  # skip from first encoder
+
+        x_recon = torch.sigmoid(d3)
         return x_recon
 
     def training_step(self, batch, batch_idx):
@@ -127,6 +94,11 @@ class ImageCompressionModel(pl.LightningModule):
         loss = mse_loss
 
         self.log("train_loss", loss)
+
+        optimizer = self.optimizers()
+        lr = optimizer.param_groups[0]["lr"]
+        self.log("learning_rate", lr, prog_bar=True)
+
         return loss
 
     def configure_optimizers(self):
@@ -140,17 +112,20 @@ class ImageCompressionModel(pl.LightningModule):
 
         return {
             "optimizer": optimizer,
-            "lr_scheduler": scheduler,
-            "monitor": "train_loss",
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "epoch",
+                "frequency": 1,
+                "monitor": "train_loss",
+                "name": "learning_rate",
+            },
         }
 
 
 def main() -> None:
     import torchvision.transforms as transforms
-    import matplotlib.pyplot as plt
     from torchsummary import summary
 
-    # Set up model
     model = ImageCompressionModel()
 
     def image_to_tensor(image_path):
@@ -159,7 +134,6 @@ def main() -> None:
         return transform(image).unsqueeze(0)
 
     image_tensor = image_to_tensor("image.png")
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     image_tensor = image_tensor.to(device)
